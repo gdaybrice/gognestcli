@@ -8,8 +8,10 @@ CLI for Google Nest cameras via the Smart Device Management (SDM) API. Single bi
 - **Devices** — List all Nest devices in your SDM project
 - **Info** — Show camera traits, status, and room assignment
 - **Snapshot** — Capture a JPEG frame from a live camera stream (via WebRTC + ffmpeg)
-- **Record** — Record WebM video clips of any duration
-- **Events** — Listen for motion/person events via Pub/Sub, auto-capture on trigger
+- **Record** — Record MP4/WebM video clips of any duration
+- **Live** — Low-latency live view window via ffplay
+- **Stream** — Raw H264 to stdout — pipe to any player or tool
+- **Events** — Listen for motion/person events via Pub/Sub, auto-capture snapshots and clips on trigger
 - **Secure credentials** — Refresh tokens stored in OS keyring (macOS Keychain, Linux SecretService), never plaintext on disk
 
 ## Installation
@@ -26,7 +28,7 @@ go build -o gognestcli .
 
 ### Optional: ffmpeg
 
-For JPEG snapshot extraction (otherwise saves short WebM clips):
+Required for snapshots, recording, and live view:
 
 ```bash
 brew install ffmpeg    # macOS
@@ -71,22 +73,33 @@ For headless environments:
 ./gognestcli snapshot -o photo.jpg
 
 # Record 15 seconds of video
-./gognestcli record -d 15 -o clip.webm
+./gognestcli record -d 15 -o clip.mp4
+
+# Live view window
+./gognestcli live
+
+# Stream raw H264 to stdout (pipe to any player)
+./gognestcli stream | ffplay -f h264 -
 
 # Listen for events and auto-capture
 ./gognestcli events -o ./captures
+
+# Events with video clips on motion
+./gognestcli events -o ./captures --clip --clip-secs 10
 ```
 
 ## Commands
 
 ```
-gognestcli auth [--manual]           # OAuth setup
-gognestcli devices                   # List devices
-gognestcli info [device-id]          # Camera traits + status
-gognestcli snapshot [-o file.jpg]    # Snapshot (JPEG via ffmpeg, or WebM fallback)
-gognestcli record [-d 15] [-o file]  # Record N seconds to WebM
-gognestcli events [-o dir]           # Auto-capture on motion/person events
-gognestcli version                   # Print version
+gognestcli auth [--manual]                  # OAuth setup
+gognestcli devices                          # List devices
+gognestcli info [device-id]                 # Camera traits + status
+gognestcli snapshot [-o file.jpg]           # Snapshot (JPEG via WebRTC + ffmpeg)
+gognestcli record [-d 15] [-o clip.mp4]     # Record N seconds to MP4/WebM
+gognestcli live [-d device-id]              # Live view via ffplay
+gognestcli stream [-d device-id]            # Raw H264 to stdout
+gognestcli events [-o dir] [--clip]         # Auto-capture on motion/person events
+gognestcli version                          # Print version
 ```
 
 ## Configuration
@@ -119,8 +132,9 @@ Never written as plaintext to disk.
 ## How It Works
 
 - **WebRTC streaming** via [Pion](https://github.com/pion/webrtc) — pure Go, no browser needed
-- **H264 video + Opus audio** — received as RTP, muxed to WebM via [ebml-go](https://github.com/at-wat/ebml-go)
-- **JPEG snapshots** — short WebM clip → ffmpeg frame extraction
+- **H264 video + Opus audio** — received as RTP, written as raw H264 Annex B
+- **ffmpeg pipeline** — raw H264 → JPEG snapshots, MP4/WebM clips, or piped to ffplay for live view
+- **Event images** — fast JPEG download via CameraEventImage API (no WebRTC needed per event)
 - **Event polling** — Pub/Sub REST API (`pull` + `acknowledge`), triggers snapshot/clip on motion or person detection
 - **Stream management** — auto-extends WebRTC session every 4 minutes, sends PLI every 2 seconds for keyframes
 
@@ -136,9 +150,8 @@ Never written as plaintext to disk.
 - [kong](https://github.com/alecthomas/kong) — CLI framework
 - [99designs/keyring](https://github.com/99designs/keyring) — OS keyring
 - [pion/webrtc](https://github.com/pion/webrtc) — pure Go WebRTC
-- [ebml-go](https://github.com/at-wat/ebml-go) — WebM muxing
 - [pion/rtcp](https://github.com/pion/rtcp) — RTCP for PLI requests
-- **ffmpeg** (optional system binary) — JPEG extraction
+- **ffmpeg** (system binary) — video conversion, snapshots, live view
 
 ## Credits
 

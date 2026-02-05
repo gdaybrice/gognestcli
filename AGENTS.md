@@ -3,13 +3,13 @@
 ## Project Structure
 
 - `main.go`: CLI entrypoint → `cmd.Execute()`.
-- `internal/cmd/`: Kong-based CLI commands (auth, devices, info, snapshot, record, events).
+- `internal/cmd/`: Kong-based CLI commands (auth, devices, info, snapshot, record, live, stream, events).
 - `internal/config/`: JSON config at `~/.config/gognestcli/config.json`.
 - `internal/secrets/`: OS keyring via `99designs/keyring` for refresh token storage.
 - `internal/auth/`: OAuth2 flow (browser callback + manual paste) and token refresh.
-- `internal/sdm/`: SDM REST API client (no googleapis SDK).
+- `internal/sdm/`: SDM REST API client (no googleapis SDK). Includes WebRTC stream management and event image download.
 - `internal/webrtc/`: Pion WebRTC session management for camera streams.
-- `internal/recorder/`: WebM muxing via ebml-go + FFmpeg snapshot extraction.
+- `internal/recorder/`: Raw H264 capture + ffmpeg pipeline for JPEG/MP4/WebM conversion. Also provides stdout and pipe writers.
 - `internal/pubsub/`: Pub/Sub REST API polling for device events.
 
 ## Build & Development Commands
@@ -17,7 +17,7 @@
 - `go build -o gognestcli .`: build the binary.
 - `go vet ./...`: static analysis.
 - `go test ./...`: run tests.
-- Optional: `ffmpeg` must be in PATH for JPEG snapshot extraction.
+- `ffmpeg` must be in PATH for snapshots, recording, and live view.
 
 ## Coding Style
 
