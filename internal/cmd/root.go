@@ -14,6 +14,8 @@ type CLI struct {
 	Info     InfoCmd     `cmd:"" help:"Show camera details"`
 	Snapshot SnapshotCmd `cmd:"" help:"Take a camera snapshot"`
 	Record   RecordCmd   `cmd:"" help:"Record a video clip"`
+	Live     LiveCmd     `cmd:"" help:"Live view via ffplay"`
+	Stream   StreamCmd   `cmd:"" help:"Stream raw H264 to stdout"`
 	Events   EventsCmd   `cmd:"" help:"Listen for motion/person events"`
 	Version  VersionCmd  `cmd:"" help:"Print version"`
 }

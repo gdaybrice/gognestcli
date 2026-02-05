@@ -3,6 +3,7 @@ package recorder
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,38 +11,30 @@ import (
 	"sync"
 	"time"
 
-	"github.com/at-wat/ebml-go/webm"
-	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media/samplebuilder"
 )
 
-// Recorder captures WebRTC media tracks to a WebM file.
-type Recorder struct {
+// H264Writer collects raw H264 Annex B data from a WebRTC video track.
+type H264Writer struct {
 	mu       sync.Mutex
-	writers  []webm.BlockWriteCloser
+	file     *os.File
 	filename string
-	started  time.Time
+	frames   int
 }
 
-// NewRecorder creates a new WebM recorder that writes to the given file.
-func NewRecorder(filename string) *Recorder {
-	return &Recorder{filename: filename}
-}
-
-// HandleTrack processes an incoming WebRTC track and writes it to the WebM file.
-func (r *Recorder) HandleTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver, ctx context.Context) {
-	codec := track.Codec()
-
-	if strings.EqualFold(codec.MimeType, webrtc.MimeTypeH264) {
-		r.recordVideo(track, ctx)
-	} else if strings.EqualFold(codec.MimeType, webrtc.MimeTypeOpus) {
-		r.recordAudio(track, ctx)
+// NewH264Writer creates a writer that saves raw H264 Annex B stream.
+func NewH264Writer(filename string) (*H264Writer, error) {
+	f, err := os.Create(filename)
+	if err != nil {
+		return nil, err
 	}
+	return &H264Writer{file: f, filename: filename}, nil
 }
 
-func (r *Recorder) recordVideo(track *webrtc.TrackRemote, ctx context.Context) {
+// HandleVideoTrack reads H264 RTP packets and writes Annex B NAL units.
+func (w *H264Writer) HandleVideoTrack(track *webrtc.TrackRemote, ctx context.Context) {
 	builder := samplebuilder.New(128, &codecs.H264Packet{}, track.Codec().ClockRate)
 
 	for {
@@ -62,12 +55,42 @@ func (r *Recorder) recordVideo(track *webrtc.TrackRemote, ctx context.Context) {
 			if sample == nil {
 				break
 			}
-			r.writeVideoSample(sample.Data, sample.Duration)
+			w.mu.Lock()
+			if w.file != nil {
+				w.file.Write(sample.Data)
+				w.frames++
+			}
+			w.mu.Unlock()
 		}
 	}
 }
 
-func (r *Recorder) recordAudio(track *webrtc.TrackRemote, ctx context.Context) {
+// Frames returns the number of frames written so far.
+func (w *H264Writer) Frames() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.frames
+}
+
+// Close closes the file.
+func (w *H264Writer) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file != nil {
+		err := w.file.Close()
+		w.file = nil
+		return err
+	}
+	return nil
+}
+
+// StdoutH264Writer writes raw H264 Annex B data to stdout.
+type StdoutH264Writer struct{}
+
+// HandleVideoTrack reads H264 RTP packets and writes Annex B NAL units to stdout.
+func (w *StdoutH264Writer) HandleVideoTrack(track *webrtc.TrackRemote, ctx context.Context) {
+	builder := samplebuilder.New(128, &codecs.H264Packet{}, track.Codec().ClockRate)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -80,171 +103,217 @@ func (r *Recorder) recordAudio(track *webrtc.TrackRemote, ctx context.Context) {
 			return
 		}
 
-		r.writeAudioSample(pkt)
+		builder.Push(pkt)
+		for {
+			sample := builder.Pop()
+			if sample == nil {
+				break
+			}
+			if _, err := os.Stdout.Write(sample.Data); err != nil {
+				return
+			}
+		}
 	}
 }
 
-func (r *Recorder) initWriters() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.writers != nil {
-		return nil
-	}
-
-	f, err := os.Create(r.filename)
-	if err != nil {
-		return fmt.Errorf("creating output file: %w", err)
-	}
-
-	tracks := []webm.TrackEntry{
-		{
-			Name:            "Video",
-			TrackNumber:     1,
-			TrackUID:        1,
-			CodecID:         "V_MPEG4/ISO/AVC",
-			TrackType:       1,
-			DefaultDuration: 33333333, // ~30fps
-			Video: &webm.Video{
-				PixelWidth:  1920,
-				PixelHeight: 1080,
-			},
-		},
-		{
-			Name:        "Audio",
-			TrackNumber: 2,
-			TrackUID:    2,
-			CodecID:     "A_OPUS",
-			TrackType:   2,
-			Audio: &webm.Audio{
-				SamplingFrequency: 48000,
-				Channels:          2,
-			},
-		},
-	}
-
-	ws, err := webm.NewSimpleBlockWriter(f, tracks)
-	if err != nil {
-		f.Close()
-		return fmt.Errorf("creating WebM writer: %w", err)
-	}
-
-	r.writers = ws
-	r.started = time.Now()
-	return nil
+// PipeH264Writer writes raw H264 Annex B data to an io.Writer.
+type PipeH264Writer struct {
+	W io.Writer
 }
 
-func (r *Recorder) writeVideoSample(data []byte, duration time.Duration) {
-	if err := r.initWriters(); err != nil {
-		return
-	}
+// HandleVideoTrack reads H264 RTP packets and writes Annex B NAL units to the pipe.
+func (w *PipeH264Writer) HandleVideoTrack(track *webrtc.TrackRemote, ctx context.Context) {
+	builder := samplebuilder.New(128, &codecs.H264Packet{}, track.Codec().ClockRate)
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 
-	ts := int64(time.Since(r.started) / time.Millisecond)
-	if len(r.writers) > 0 {
-		_, _ = r.writers[0].Write(true, ts, data)
-	}
-	_ = duration // timestamp based on wall clock
-}
+		pkt, _, err := track.ReadRTP()
+		if err != nil {
+			return
+		}
 
-func (r *Recorder) writeAudioSample(pkt *rtp.Packet) {
-	if err := r.initWriters(); err != nil {
-		return
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	ts := int64(time.Since(r.started) / time.Millisecond)
-	if len(r.writers) > 1 {
-		_, _ = r.writers[1].Write(true, ts, pkt.Payload)
+		builder.Push(pkt)
+		for {
+			sample := builder.Pop()
+			if sample == nil {
+				break
+			}
+			if _, err := w.W.Write(sample.Data); err != nil {
+				return
+			}
+		}
 	}
 }
 
-// Close finalizes the WebM file.
-func (r *Recorder) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for _, w := range r.writers {
-		w.Close()
-	}
-	r.writers = nil
-	return nil
-}
-
-// ExtractSnapshot takes a WebM file and extracts the first frame as a JPEG using ffmpeg.
-func ExtractSnapshot(webmPath, jpegPath string) error {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return fmt.Errorf("ffmpeg not found in PATH; install ffmpeg for JPEG snapshots")
-	}
-
-	cmd := exec.Command("ffmpeg",
-		"-y",
-		"-i", webmPath,
-		"-frames:v", "1",
-		"-q:v", "2",
-		jpegPath,
-	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ffmpeg failed: %w\n%s", err, string(output))
-	}
-	return nil
-}
-
-// TakeSnapshot records a brief clip and extracts a JPEG frame.
-// If ffmpeg is not available, saves a short WebM clip instead.
+// TakeSnapshot captures a JPEG frame from a WebRTC camera stream.
+// It writes raw H264 to a temp file and uses ffmpeg to extract a frame.
 func TakeSnapshot(outputPath string, startStream func(ctx context.Context, handler func(*webrtc.TrackRemote, *webrtc.RTPReceiver)) error) error {
-	ext := strings.ToLower(filepath.Ext(outputPath))
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return fmt.Errorf("ffmpeg is required for snapshots; install it with: brew install ffmpeg")
+	}
 
-	webmPath := outputPath
-	wantJPEG := ext == ".jpg" || ext == ".jpeg"
-	if wantJPEG {
-		webmPath = outputPath + ".tmp.webm"
+	tmpH264 := outputPath + ".tmp.h264"
+	defer os.Remove(tmpH264)
+
+	h264w, err := NewH264Writer(tmpH264)
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rec := NewRecorder(webmPath)
+	gotVideo := make(chan struct{}, 1)
 
-	gotData := make(chan struct{}, 1)
-	err := startStream(ctx, func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		select {
-		case gotData <- struct{}{}:
-		default:
+	err = startStream(ctx, func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		if strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeH264) {
+			select {
+			case gotVideo <- struct{}{}:
+			default:
+			}
+			h264w.HandleVideoTrack(track, ctx)
 		}
-		rec.HandleTrack(track, receiver, ctx)
+		// Ignore audio for snapshots
 	})
 	if err != nil {
+		h264w.Close()
 		return fmt.Errorf("starting stream: %w", err)
 	}
 
-	// Wait for first track data, then record a few more seconds for a usable frame
+	// Wait for video track, then collect a few seconds of frames
 	select {
-	case <-gotData:
-		fmt.Println("Receiving media, capturing...")
-		time.Sleep(3 * time.Second)
+	case <-gotVideo:
+		fmt.Println("Receiving video, capturing frames...")
 	case <-ctx.Done():
-		// timed out waiting for media
+		h264w.Close()
+		return fmt.Errorf("timed out waiting for video track")
 	}
 
-	if err := rec.Close(); err != nil {
-		return fmt.Errorf("closing recorder: %w", err)
-	}
-
-	if wantJPEG {
-		defer os.Remove(webmPath)
-		if err := ExtractSnapshot(webmPath, outputPath); err != nil {
-			// Fallback: keep the WebM
-			finalWebM := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".webm"
-			os.Rename(webmPath, finalWebM)
-			fmt.Printf("Warning: %v\nSaved WebM clip instead: %s\n", err, finalWebM)
-			return nil
+	// Wait until we have some frames, up to 5 seconds
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			goto extract
+		case <-ticker.C:
+			if h264w.Frames() >= 30 {
+				goto extract
+			}
 		}
 	}
 
+extract:
+	h264w.Close()
+
+	// Use ffmpeg to extract a JPEG from the raw H264 stream
+	ext := strings.ToLower(filepath.Ext(outputPath))
+	if ext == ".webm" {
+		return h264ToWebM(tmpH264, outputPath)
+	}
+
+	return h264ToJPEG(tmpH264, outputPath)
+}
+
+func h264ToJPEG(h264Path, jpegPath string) error {
+	cmd := exec.Command("ffmpeg",
+		"-y",
+		"-f", "h264",
+		"-i", h264Path,
+		"-frames:v", "1",
+		"-q:v", "2",
+		jpegPath,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg conversion failed: %w\n%s", err, string(output))
+	}
+	return nil
+}
+
+func h264ToWebM(h264Path, webmPath string) error {
+	cmd := exec.Command("ffmpeg",
+		"-y",
+		"-f", "h264",
+		"-i", h264Path,
+		"-c:v", "copy",
+		webmPath,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg conversion failed: %w\n%s", err, string(output))
+	}
+	return nil
+}
+
+// RecordClip records a WebRTC stream to a file using ffmpeg for muxing.
+// Duration is how long to record. Output format is determined by file extension.
+func RecordClip(outputPath string, duration time.Duration, startStream func(ctx context.Context, handler func(*webrtc.TrackRemote, *webrtc.RTPReceiver)) error) error {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return fmt.Errorf("ffmpeg is required for recording; install it with: brew install ffmpeg")
+	}
+
+	tmpH264 := outputPath + ".tmp.h264"
+	defer os.Remove(tmpH264)
+
+	h264w, err := NewH264Writer(tmpH264)
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), duration+15*time.Second)
+	defer cancel()
+
+	gotVideo := make(chan struct{}, 1)
+
+	err = startStream(ctx, func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		if strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeH264) {
+			select {
+			case gotVideo <- struct{}{}:
+			default:
+			}
+			h264w.HandleVideoTrack(track, ctx)
+		}
+	})
+	if err != nil {
+		h264w.Close()
+		return fmt.Errorf("starting stream: %w", err)
+	}
+
+	// Wait for video then record for the requested duration
+	select {
+	case <-gotVideo:
+		fmt.Println("Receiving video, recording...")
+	case <-ctx.Done():
+		h264w.Close()
+		return fmt.Errorf("timed out waiting for video track")
+	}
+
+	time.Sleep(duration)
+	h264w.Close()
+
+	// Mux with ffmpeg
+	ext := strings.ToLower(filepath.Ext(outputPath))
+	if ext == ".mp4" {
+		return h264ToMP4(tmpH264, outputPath)
+	}
+	return h264ToWebM(tmpH264, outputPath)
+}
+
+func h264ToMP4(h264Path, mp4Path string) error {
+	cmd := exec.Command("ffmpeg",
+		"-y",
+		"-f", "h264",
+		"-i", h264Path,
+		"-c:v", "copy",
+		mp4Path,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg conversion failed: %w\n%s", err, string(output))
+	}
 	return nil
 }

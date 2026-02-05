@@ -14,9 +14,11 @@ import (
 const pubsubBaseURL = "https://pubsub.googleapis.com/v1"
 
 // Event represents a parsed Nest event from Pub/Sub.
+// Event represents a parsed Nest event from Pub/Sub.
 type Event struct {
 	DeviceName string
 	EventType  string // "CameraMotion.Motion", "CameraPerson.Person", etc.
+	EventID    string // Used for CameraEventImage.GenerateImage
 	Timestamp  time.Time
 	Raw        json.RawMessage
 }
@@ -202,9 +204,17 @@ func (l *Listener) parseMessage(msg receivedMessage) []Event {
 
 	var events []Event
 	for eventType, raw := range ned.ResourceUpdate.Events {
+		// Extract eventId from the event data
+		var eventData struct {
+			EventSessionID string `json:"eventSessionId"`
+			EventID        string `json:"eventId"`
+		}
+		json.Unmarshal(raw, &eventData)
+
 		events = append(events, Event{
 			DeviceName: ned.ResourceUpdate.Name,
 			EventType:  eventType,
+			EventID:    eventData.EventID,
 			Timestamp:  ts,
 			Raw:        raw,
 		})

@@ -14,7 +14,7 @@ import (
 const (
 	googleAuthURL    = "https://nestservices.google.com/partnerconnections"
 	googleTokenURL   = "https://oauth2.googleapis.com/token"
-	sdmScope         = "https://www.googleapis.com/auth/sdm.service"
+	sdmScope         = "https://www.googleapis.com/auth/sdm.service https://www.googleapis.com/auth/pubsub"
 	DefaultPort      = 9004
 	DefaultRedirect  = "http://localhost:9004/callback"
 )

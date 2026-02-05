@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 )
 
 const baseURL = "https://smartdevicemanagement.googleapis.com/v1"
@@ -112,6 +113,57 @@ func (c *Client) StopWebRTCStream(deviceName, mediaSessionID string) error {
 		"mediaSessionId": mediaSessionID,
 	}
 	_, err := c.ExecuteCommand(deviceName, "sdm.devices.commands.CameraLiveStream.StopWebRtcStream", params)
+	return err
+}
+
+// EventImage holds the URL and token for downloading a camera event image.
+type EventImage struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
+
+// GenerateEventImage requests a camera event image for the given eventId.
+func (c *Client) GenerateEventImage(deviceName, eventID string) (*EventImage, error) {
+	params := map[string]interface{}{
+		"eventId": eventID,
+	}
+	raw, err := c.ExecuteCommand(deviceName, "sdm.devices.commands.CameraEventImage.GenerateImage", params)
+	if err != nil {
+		return nil, err
+	}
+	var img EventImage
+	if err := json.Unmarshal(raw, &img); err != nil {
+		return nil, fmt.Errorf("parsing event image response: %w", err)
+	}
+	return &img, nil
+}
+
+// DownloadEventImage downloads the JPEG image from an EventImage to the given path.
+func (c *Client) DownloadEventImage(img *EventImage, outputPath string) error {
+	req, err := http.NewRequest("GET", img.URL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Basic "+img.Token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("downloading image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("image download returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, resp.Body)
 	return err
 }
 

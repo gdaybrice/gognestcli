@@ -5,7 +5,6 @@ go 1.25.7
 require (
 	github.com/99designs/keyring v1.2.2
 	github.com/alecthomas/kong v1.13.0
-	github.com/at-wat/ebml-go v0.17.2
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/rtp v1.10.1
 	github.com/pion/webrtc/v4 v4.2.3
